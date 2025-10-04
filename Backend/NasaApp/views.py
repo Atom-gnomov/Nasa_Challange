@@ -1,17 +1,24 @@
+# NasaApp/views.py
 from __future__ import annotations
-from datetime import date, timedelta
+
+from datetime import date
 from zoneinfo import ZoneInfo
 
-from rest_framework import viewsets, permissions, filters, status, serializers
-from rest_framework.decorators import action
+from rest_framework import serializers, viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django_filters.rest_framework import DjangoFilterBackend
 
 from .models import Activity, WeatherParam, ActivityParam
+from .data_pipeline import (
+    ensure_dataset,
+    compute_effective_horizon,
+    run_arima_and_read_row,
+)
 
+# ============================================================================
+#                                SERIALIZERS
+# ============================================================================
 
-# ---- Serializers ----
 class ActivitySerializer(serializers.ModelSerializer):
     class Meta:
         model = Activity
@@ -39,56 +46,8 @@ class ActivityParamSerializer(serializers.ModelSerializer):
         fields = ["id", "activity", "activity_id", "param", "param_id"]
 
 
-# ---- Open CRUD ViewSets (no auth/permissions) ----
-class ActivityViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.AllowAny]
-    serializer_class = ActivitySerializer
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = {"is_active": ["exact"], "slug": ["exact"], "name": ["icontains"]}
-    search_fields = ["name", "slug"]
-    ordering_fields = ["name", "slug", "id"]
-    ordering = ["name"]
-
-    def get_queryset(self):
-        # For demo: show only active by default; change if you want all
-        return Activity.objects.filter(is_active=True)
-
-    @action(detail=True, methods=["get"], url_path="params")
-    def params(self, request, pk=None):
-        activity = self.get_object()
-        params_qs = WeatherParam.objects.filter(activities__activity=activity).distinct().order_by("code")
-        return Response(WeatherParamSerializer(params_qs, many=True).data)
-
-
-class WeatherParamViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.AllowAny]
-    serializer_class = WeatherParamSerializer
-    queryset = WeatherParam.objects.all()
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = {"code": ["exact", "icontains"], "unit": ["exact"]}
-    search_fields = ["code", "description"]
-    ordering_fields = ["code", "id"]
-    ordering = ["code"]
-
-
-class ActivityParamViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.AllowAny]
-    serializer_class = ActivityParamSerializer
-    queryset = ActivityParam.objects.select_related("activity", "param")
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = {
-        "activity": ["exact"],
-        "activity__slug": ["exact"],
-        "param": ["exact"],
-        "param__code": ["exact", "icontains"],
-    }
-    search_fields = ["activity__name", "activity__slug", "param__code", "param__description"]
-    ordering_fields = ["activity__name", "param__code", "id"]
-    ordering = ["activity__name", "param__code"]
-
-
-# ---- Prediction INPUT (collect and validate user data only) ----
-class PredictInputSerializer(serializers.Serializer):
+# Лёгкий входной сериализатор для предикта (минимум проверок).
+class PredictInputSerializerLight(serializers.Serializer):
     activity = serializers.SlugField(min_length=1, max_length=80)
     date = serializers.DateField()
     lat = serializers.DecimalField(max_digits=8, decimal_places=5)
@@ -97,58 +56,191 @@ class PredictInputSerializer(serializers.Serializer):
     local_tz = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, attrs):
-        lat = float(attrs["lat"])
-        lon = float(attrs["lon"])
-        if not (-90.0 <= lat <= 90.0):
-            raise serializers.ValidationError({"lat": "Latitude must be in [-90, 90]."})
-        if not (-180.0 <= lon <= 180.0):
-            raise serializers.ValidationError({"lon": "Longitude must be in [-180, 180]."})
-
+        # Активность должна существовать и быть активной
         try:
             activity = Activity.objects.get(slug=attrs["activity"], is_active=True)
         except Activity.DoesNotExist:
-            raise serializers.ValidationError({"activity": "Unknown or inactive activity."})
-        attrs["activity_obj"] = activity
+            raise serializers.ValidationError({"activity": "unknown or inactive"})
 
-        today = date.today()
-        if attrs["date"] < today:
-            raise serializers.ValidationError({"date": "Date must not be in the past."})
-        if attrs["date"] > today + timedelta(days=14):
-            raise serializers.ValidationError({"date": "Date must be within 14 days from today."})
+        # Простейшая проверка координат
+        lat, lon = float(attrs["lat"]), float(attrs["lon"])
+        if not (-90.0 <= lat <= 90.0):
+            raise serializers.ValidationError({"lat": "[-90, 90]"})
+        if not (-180.0 <= lon <= 180.0):
+            raise serializers.ValidationError({"lon": "[-180, 180]"})
 
+        # Таймзона (необяз.)
         tz = attrs.get("local_tz") or "UTC"
         try:
             ZoneInfo(tz)
         except Exception:
             tz = "UTC"
+
+        attrs["activity_obj"] = activity
         attrs["local_tz"] = tz
         return attrs
 
 
+# ============================================================================
+#                                  VIEWSETS
+# ============================================================================
+
+class ActivityViewSet(viewsets.ModelViewSet):
+    """
+    CRUD для каталога активностей.
+    """
+    queryset = Activity.objects.all().order_by("id")
+    serializer_class = ActivitySerializer
+    permission_classes = [permissions.AllowAny]
+
+
+class WeatherParamViewSet(viewsets.ModelViewSet):
+    """
+    CRUD для справочника погодных параметров.
+    """
+    queryset = WeatherParam.objects.all().order_by("code")
+    serializer_class = WeatherParamSerializer
+    permission_classes = [permissions.AllowAny]
+
+
+class ActivityParamViewSet(viewsets.ModelViewSet):
+    """
+    CRUD для связи (какие параметры релевантны активности).
+    """
+    queryset = ActivityParam.objects.select_related("activity", "param").all().order_by("activity_id", "param_id")
+    serializer_class = ActivityParamSerializer
+    permission_classes = [permissions.AllowAny]
+
+
+# ============================================================================
+#                        ВСПОМОГАТЕЛЬНЫЕ/ИНФО ЭНДПОИНТЫ
+# ============================================================================
+
 class PredictInputView(APIView):
     """
     POST /api/predict/input/
-    Accepts activity + date + lat/lon, validates, and returns the
-    exact list of WeatherParam codes your model should predict.
+    Предварительная проверка: возвращает, какие WeatherParam требуются выбранной активности.
+    Модель НЕ запускается. Этот шаг опционален — можно сразу бить в /api/predict/.
     """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        s = PredictInputSerializer(data=request.data)
+        s = PredictInputSerializerLight(data=request.data)
         s.is_valid(raise_exception=True)
         v = s.validated_data
         activity = v["activity_obj"]
 
-        params_qs = WeatherParam.objects.filter(activities__activity=activity).distinct().order_by("code")
-        required = [{"code": p.code, "unit": p.unit, "description": p.description} for p in params_qs]
+        required_params = list(
+            WeatherParam.objects
+            .filter(activities__activity=activity)
+            .order_by("code")
+            .values("code", "unit", "description")
+        )
 
-        return Response({
-            "activity": {"id": activity.id, "name": activity.name, "slug": activity.slug},
-            "date": str(v["date"]),
-            "location": {"lat": float(v["lat"]), "lon": float(v["lon"])},
-            "granularity": v["granularity"],
-            "local_tz": v["local_tz"],
-            "required_params": required
-        }, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "activity": ActivitySerializer(activity).data,
+                "date": str(v["date"]),
+                "location": {"lat": float(v["lat"]), "lon": float(v["lon"])},
+                "granularity": v["granularity"],
+                "local_tz": v["local_tz"],
+                "required_params": required_params,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
+# ============================================================================
+#                            СИНХРОННЫЙ ПРЕДИКТ
+# ============================================================================
+
+# Соответствие кодов из БД -> колонкам в CSV, который пишет ARIMA.
+CSV_MAP = {
+    "AIR_TEMP_C": "air_temp_C",
+    "PRESSURE_KPA": "pressure_kPa",
+    "WIND_SPEED_M_S": "wind_speed_m_s",
+    "WATER_TEMP_C": "estimated_water_temp_C",
+    "MOON_PHASE": "moon_phase",
+}
+
+
+class PredictView(APIView):
+    """
+    POST /api/predict/
+    Синхронный конвейер:
+      1) валидируем минимум входных данных,
+      2) учитываем лаг источника (по умолчанию 3 дня): horizon = (target - (today - 3)),
+      3) ensure_dataset(...) — если датасета нет локально, докачиваем его,
+      4) запускаем ARIMA-скрипт, читаем прогноз на целевую дату,
+      5) возвращаем только релевантные параметры выбранной активности.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        s = PredictInputSerializerLight(data=request.data)
+        s.is_valid(raise_exception=True)
+        v = s.validated_data
+
+        activity = v["activity_obj"]
+        target: date = v["date"]
+        lat, lon = float(v["lat"]), float(v["lon"])
+
+        # Какие коды нужны активности
+        required_codes = list(
+            WeatherParam.objects
+            .filter(activities__activity=activity)
+            .order_by("code")
+            .values_list("code", flat=True)
+        )
+
+        # Учитываем лаг провайдера (N+3)
+        horizon_days, asof = compute_effective_horizon(target=target, lag_days=3)
+        if horizon_days <= 0:
+            return Response(
+                {"detail": f"Запрошенная дата слишком близка к текущей. "
+                           f"Источник отдаёт данные максимум до {asof.isoformat()} (today-3)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Гарантируем наличие локального датасета (скачаем через парсер, если нет)
+        ddir = ensure_dataset(activity.slug, lat, lon, asof)
+
+        # Запускаем ARIMA и берём ровно одну строку прогноза (на нужную дату)
+        row = run_arima_and_read_row(
+            activity_slug=activity.slug,
+            lat=lat,
+            lon=lon,
+            target=target,
+            lag_days=3,
+            dataset_path=ddir,
+        )
+
+        # Соберём ответ только по релевантным кодам
+        units = {wp.code: wp.unit for wp in WeatherParam.objects.filter(code__in=required_codes)}
+        params_out = []
+        for code in required_codes:
+            csv_col = CSV_MAP.get(code)
+            if csv_col and csv_col in row and row[csv_col] is not None:
+                val = row[csv_col]
+                # фазу луны НЕ кастим в float — это строка
+                if code != "MOON_PHASE":
+                    try:
+                        val = float(val)
+                    except (TypeError, ValueError):
+                        pass
+                params_out.append({"code": code, "value": val, "unit": units.get(code, "")})
+
+        return Response(
+            {
+                "activity": ActivitySerializer(activity).data,
+                "date": target.isoformat(),
+                "location": {"lat": lat, "lon": lon},
+                "granularity": v["granularity"],
+                "local_tz": v["local_tz"],
+                "asof": asof.isoformat(),          # последний доступный день источника (today-3)
+                "horizon_days": horizon_days,      # это и есть N+3
+                "model_version": "arima-merged",
+                "params": params_out,
+            },
+            status=status.HTTP_200_OK,
+        )

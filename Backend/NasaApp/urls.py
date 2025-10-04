@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import ActivityViewSet, WeatherParamViewSet, ActivityParamViewSet, PredictInputView
+from .views import ActivityViewSet, WeatherParamViewSet, ActivityParamViewSet, PredictInputView, PredictView
 
 app_name = "NasaApp"
 
@@ -12,4 +12,5 @@ router.register(r"activity-params", ActivityParamViewSet, basename="activitypara
 urlpatterns = [
     path("", include(router.urls)),
     path("predict/input/", PredictInputView.as_view(), name="predict-input"),
+    path("predict/", PredictView.as_view(), name="predict")
 ]
