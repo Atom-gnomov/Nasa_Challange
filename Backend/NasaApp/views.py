@@ -150,3 +150,5 @@ class PredictInputView(APIView):
             "local_tz": v["local_tz"],
             "required_params": required
         }, status=status.HTTP_200_OK)
+
+
