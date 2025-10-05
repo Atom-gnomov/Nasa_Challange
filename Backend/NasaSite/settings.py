@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'NasaApp',
     "rest_framework",
     "django_filters",
+    "corsheaders",
 ]
 
 REST_FRAMEWORK = {
@@ -52,6 +53,7 @@ REST_FRAMEWORK = {
 }
 
 MIDDLEWARE = [
+"corsheaders.middleware.CorsMiddleware",
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -62,7 +64,7 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'NasaSite.urls'
-
+CORS_ALLOW_ALL_ORIGINS = True
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -80,7 +82,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'NasaSite.wsgi.application'
 
-
 # Database
 # https://docs.djangoproject.com/en/dev/ref/settings/#databases
 
@@ -90,7 +91,10 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:9002",
+    "http://127.0.0.1:9002",
+]
 
 # Password validation
 # https://docs.djangoproject.com/en/dev/ref/settings/#auth-password-validators
@@ -113,7 +117,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # Internationalization
 # https://docs.djangoproject.com/en/dev/topics/i18n/
-
+APPEND_SLASH = False
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
@@ -127,3 +131,25 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/dev/howto/static-files/
 
 STATIC_URL = 'static/'
+CSRF_TRUSTED_ORIGINS = [
+    "https://9000-firebase-studio-1759575854777.cluster-bbaw5ubmyzaeiswfik7bsgqew2.cloudworkstations.dev",
+]
+
+# CORS: you already set this, but make it explicit & consistent
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = [
+    "https://9000-firebase-studio-1759575854777.cluster-bbaw5ubmyzaeiswfik7bsgqew2.cloudworkstations.dev",
+]
+
+# If you still want to allow any origin during dev, keep:
+CORS_ALLOW_ALL_ORIGINS = True
+# …but note: with credentials=True, modern browsers don't allow '*'.
+# django-cors-headers will reflect the Origin for you.
+
+# Trust X-Forwarded-* headers from the proxy so HTTPS detection works
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+
+# Optional but tidy for your case
+
+ALLOWED_HOSTS = ["*"]  # Dev only

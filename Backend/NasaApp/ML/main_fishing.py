@@ -27,7 +27,7 @@ def run(
     lon: float,
     *,
     target_date: Optional[date] = None,
-    horizon: Optional[int] = 12,
+    horizon: Optional[int] = 7,
     results_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -39,10 +39,8 @@ def run(
     """
     # --- determine horizon if only target_date provided
     if horizon is None:
-        if not target_date:
-            raise ValueError("Provide target_date or horizon")
-        today = date.today()
-        horizon = max(1, (target_date - today).days)
+        horizon = 7
+
 
     # --- use/remember nearest existing coordinate if within MAX_DISTANCE_KM
     flag, (LAT, LON) = coordinate_tool.find_existing(lat, lon)

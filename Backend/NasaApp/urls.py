@@ -10,8 +10,7 @@ from .views import (
 )
 
 app_name = "NasaApp"
-import sys
-print("### LOADED NasaApp.urls FROM:", __file__, file=sys.stderr)
+
 router = DefaultRouter()
 router.register(r"activities", ActivityViewSet, basename="activity")
 router.register(r"weather-params", WeatherParamViewSet, basename="weatherparam")
@@ -19,6 +18,8 @@ router.register(r"activity-params", ActivityParamViewSet, basename="activitypara
 
 urlpatterns = [
     path("", include(router.urls)),
-    path("ping/", PingView.as_view(), name="ping"),  # DEBUG: prove this file is loaded
-    path("predict/fishing/", FishingPredictView.as_view(), name="predict-fishing"),
+    path("ping/", PingView.as_view(), name="ping"),
+    # accept BOTH, because your proxy strips the trailing slash
+    path("predict/fishing/", FishingPredictView.as_view(), name="predict-fishing-slash"),
+    path("predict/fishing",  FishingPredictView.as_view(), name="predict-fishing-noslash"),
 ]

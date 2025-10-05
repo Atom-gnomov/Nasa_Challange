@@ -1,0 +1,40 @@
+{
+  "placeholderImages": [
+    {
+      "id": "fishing",
+      "description": "A person fishing by a calm lake.",
+      "imageUrl": "https://pbs.twimg.com/media/G2bEyYbWEAAzoN4?format=png&name=900x900",
+      "imageHint": "fishing lake"
+    },
+    {
+      "id": "camping",
+      "description": "A crowd at an outdoor music festival.",
+      "imageUrl": "https://pbs.twimg.com/media/G2bE3vnW8AAhmgf?format=png&name=900x900",
+      "imageHint": "music festival"
+    },
+    {
+      "id": "drone_flight",
+      "description": "A tent in a forest at night.",
+      "imageUrl": "https://pbs.twimg.com/media/G2bEyY6XoAAcGAu?format=png&name=900x900",
+      "imageHint": "camping tent"
+    },
+    {
+      "id": "running",
+      "description": "A drone flying over a landscape.",
+      "imageUrl": "https://pbs.twimg.com/media/G2bE2w-WQAA0Uys?format=png&name=900x900",
+      "imageHint": "drone flight"
+    },
+    {
+      "id": "cycling",
+      "description": "A person cycling on a scenic road.",
+      "imageUrl": "https://pbs.twimg.com/media/G2bEyYlWsAAQvl-?format=png&name=900x900",
+      "imageHint": "cycling road"
+    },
+    {
+      "id": "festivals",
+      "description": "A person running on a path in the morning.",
+      "imageUrl": "https://pbs.twimg.com/media/G2bEyYfWwAAFfod?format=png&name=900x900",
+      "imageHint": "running path"
+    }
+  ]
+}
