@@ -8,11 +8,18 @@ from typing import Optional, Dict, Any
 
 import pandas as pd
 
-# Важно: файлы лежат рядом в NasaApp/ML
-import Fishing_parse_data_for_year 
-import arima_predict_fishing
-import fishing_LLM_analyzer
-import coordinate_tool
+# ✅ Use package-relative imports so Django can import this as NasaApp.ML.main_fishing
+try:
+    from . import Fishing_parse_data_for_year
+    from . import arima_predict_fishing
+    from . import fishing_LLM_analyzer
+    from . import coordinate_tool
+except ImportError:
+    # Fallback if someone runs this file directly as a script (not via Django)
+    import Fishing_parse_data_for_year          # noqa
+    import arima_predict_fishing                # noqa
+    import fishing_LLM_analyzer                 # noqa
+    import coordinate_tool                      # noqa
 
 
 def run(
@@ -24,30 +31,27 @@ def run(
     results_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Главный раннер для рыбалки:
-      1) тянет год истории (если нужно) через Fishing_parse_data_for_year
-      2) ARIMA-прогноз на horizon дней (или до target_date)
-      3) Gemini-анализ по каждому дню прогноза
-      4) сохраняет результирующий CSV и возвращает его путь + JSON-данные
+    Fishing pipeline:
+      1) Ensure we have a year of history for (lat, lon) (download if missing).
+      2) Run ARIMA forecast for 'horizon' days (or until 'target_date').
+      3) Run Gemini LLM evaluation per day.
+      4) Save final CSV and return its path and rows (list of dicts).
     """
-    # 0) Определяем горизонт
+    # --- determine horizon if only target_date provided
     if horizon is None:
         if not target_date:
             raise ValueError("Provide target_date or horizon")
         today = date.today()
         horizon = max(1, (target_date - today).days)
 
-    # 1) История: всегда дергаем твой парсер (демо-логика ок)
-    #    Он сохранит fishing_year_values_{LAT}_{LON}.csv в текущей папке
-    
-    flag, coord = coordinate_tool.find_existing(lat,lon)
-    LAT = coord[0]
-    LON = coord[1]
-    print(flag, coord[0],coord[1])
-    if flag == False:
+    # --- use/remember nearest existing coordinate if within MAX_DISTANCE_KM
+    flag, (LAT, LON) = coordinate_tool.find_existing(lat, lon)
+
+    # If no close coord found, create year dataset now
+    if not flag:
         Fishing_parse_data_for_year.main(LAT, LON)
 
-    # 2) ARIMA — твоя версия ожидает CLI-аргументы через sys.argv и возвращает DataFrame
+    # --- ARIMA step: set argv for module's argparse, then call main()
     csv_name = f"fishing_year_values_{LAT}_{LON}.csv"
     sys.argv = [
         "arima_predict_fishing.py",
@@ -57,7 +61,7 @@ def run(
     ]
     future_df: pd.DataFrame = arima_predict_fishing.main()
 
-    # 3) LLM-анализ по каждому дню прогноза
+    # --- LLM step: evaluate each predicted day
     final_results = pd.DataFrame()
     for _, row in future_df.iterrows():
         res = fishing_LLM_analyzer.evaluate_fishing_with_gemini(
@@ -68,7 +72,7 @@ def run(
             water_temp_par=row["estimated_water_temp_C"],
         )
 
-        # дата + входные параметры в каждую строку
+        # copy inputs & date into result row(s)
         res.insert(0, "date", pd.to_datetime(row["date"]).date())
         res["air_temp_C"] = float(row["air_temp_C"])
         res["pressure_kPa"] = float(row["pressure_kPa"])
@@ -78,7 +82,7 @@ def run(
 
         final_results = pd.concat([final_results, res], ignore_index=True)
 
-    # 4) Сохранение CSV
+    # --- Save final CSV
     out_dir = Path(results_dir or "results_folder")
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -87,5 +91,3 @@ def run(
     final_results.to_csv(out_path, index=False, encoding="utf-8")
 
     return {"csv_path": str(out_path), "rows": final_results.to_dict(orient="records")}
-
-run(80,30)

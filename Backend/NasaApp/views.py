@@ -1,7 +1,9 @@
 from __future__ import annotations
-from datetime import date, timedelta
-from zoneinfo import ZoneInfo
 
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
 from rest_framework import viewsets, permissions, filters, status, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -11,7 +13,10 @@ from django_filters.rest_framework import DjangoFilterBackend
 from .models import Activity, WeatherParam, ActivityParam
 
 
-# ---- Serializers ----
+# ===========================
+#          SERIALIZERS
+# ===========================
+
 class ActivitySerializer(serializers.ModelSerializer):
     class Meta:
         model = Activity
@@ -39,8 +44,14 @@ class ActivityParamSerializer(serializers.ModelSerializer):
         fields = ["id", "activity", "activity_id", "param", "param_id"]
 
 
-# ---- Open CRUD ViewSets (no auth/permissions) ----
+# ===========================
+#        CRUD VIEWSETS
+# ===========================
+
 class ActivityViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for activities (demo: returns active by default).
+    """
     permission_classes = [permissions.AllowAny]
     serializer_class = ActivitySerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -50,13 +61,11 @@ class ActivityViewSet(viewsets.ModelViewSet):
     ordering = ["name"]
 
     def get_queryset(self):
-        # For demo: show only active by default; change if you want all
         return Activity.objects.filter(is_active=True)
 
     @action(detail=True, methods=["get"], url_path="params")
     def params(self, request, pk=None):
-        activity = self.get_object()
-        params_qs = WeatherParam.objects.filter(activities__activity=activity).distinct().order_by("code")
+        params_qs = WeatherParam.objects.filter(activities__activity=self.get_object()).distinct().order_by("code")
         return Response(WeatherParamSerializer(params_qs, many=True).data)
 
 
@@ -87,68 +96,109 @@ class ActivityParamViewSet(viewsets.ModelViewSet):
     ordering = ["activity__name", "param__code"]
 
 
-# ---- Prediction INPUT (collect and validate user data only) ----
-class PredictInputSerializer(serializers.Serializer):
-    activity = serializers.SlugField(min_length=1, max_length=80)
-    date = serializers.DateField()
-    lat = serializers.DecimalField(max_digits=8, decimal_places=5)
-    lon = serializers.DecimalField(max_digits=8, decimal_places=5)
-    granularity = serializers.ChoiceField(choices=["daily", "hourly"], default="daily")
-    local_tz = serializers.CharField(required=False, allow_blank=True)
+# ===========================
+#   FISHING PREDICT (CSV+LLM)
+# ===========================
+
+class FishingPredictSerializer(serializers.Serializer):
+    """
+    Input: lat, lon and either date (YYYY-MM-DD) or horizon (days).
+    Optional: results_dir (default 'results_folder').
+    """
+    lat = serializers.FloatField()
+    lon = serializers.FloatField()
+    date = serializers.DateField(required=False)
+    horizon = serializers.IntegerField(required=False, min_value=1)
+    results_dir = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate(self, attrs):
-        lat = float(attrs["lat"])
-        lon = float(attrs["lon"])
-        if not (-90.0 <= lat <= 90.0):
-            raise serializers.ValidationError({"lat": "Latitude must be in [-90, 90]."})
-        if not (-180.0 <= lon <= 180.0):
-            raise serializers.ValidationError({"lon": "Longitude must be in [-180, 180]."})
-
-        try:
-            activity = Activity.objects.get(slug=attrs["activity"], is_active=True)
-        except Activity.DoesNotExist:
-            raise serializers.ValidationError({"activity": "Unknown or inactive activity."})
-        attrs["activity_obj"] = activity
-
-        today = date.today()
-        if attrs["date"] < today:
-            raise serializers.ValidationError({"date": "Date must not be in the past."})
-        if attrs["date"] > today + timedelta(days=14):
-            raise serializers.ValidationError({"date": "Date must be within 14 days from today."})
-
-        tz = attrs.get("local_tz") or "UTC"
-        try:
-            ZoneInfo(tz)
-        except Exception:
-            tz = "UTC"
-        attrs["local_tz"] = tz
+        if not attrs.get("date") and not attrs.get("horizon"):
+            raise serializers.ValidationError("Provide 'date' or 'horizon'.")
+        lat, lon = float(attrs["lat"]), float(attrs["lon"])
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+            raise serializers.ValidationError("Invalid lat/lon")
         return attrs
 
 
-class PredictInputView(APIView):
+class FishingPredictView(APIView):
     """
-    POST /api/predict/input/
-    Accepts activity + date + lat/lon, validates, and returns the
-    exact list of WeatherParam codes your model should predict.
+    POST /api/predict/fishing/
+    Runs NasaApp.ML.main_fishing.run(...), reads produced CSV, returns its rows.
     """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        s = PredictInputSerializer(data=request.data)
+        s = FishingPredictSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         v = s.validated_data
-        activity = v["activity_obj"]
 
-        params_qs = WeatherParam.objects.filter(activities__activity=activity).distinct().order_by("code")
-        required = [{"code": p.code, "unit": p.unit, "description": p.description} for p in params_qs]
+        lat = float(v["lat"])
+        lon = float(v["lon"])
+        tgt_date: date | None = v.get("date")
+        horizon = v.get("horizon")
+        results_dir = v.get("results_dir") or "results_folder"
 
-        return Response({
-            "activity": {"id": activity.id, "name": activity.name, "slug": activity.slug},
-            "date": str(v["date"]),
-            "location": {"lat": float(v["lat"]), "lon": float(v["lon"])},
-            "granularity": v["granularity"],
-            "local_tz": v["local_tz"],
-            "required_params": required
-        }, status=status.HTTP_200_OK)
+        # 1) run your pipeline
+        from NasaApp.ML.main_fishing import run as fishing_run
+        run_result = fishing_run(
+            lat=lat,
+            lon=lon,
+            target_date=tgt_date,
+            horizon=horizon+3,
+            results_dir=results_dir,
+        )
+
+        # 2) resolve CSV path
+        csv_path = None
+        meta = {}
+        if isinstance(run_result, dict):
+            csv_path = run_result.get("csv_path")
+            for k in ("input_location", "used_location", "location_adjusted", "coord_store"):
+                if k in run_result:
+                    meta[k] = run_result[k]
+
+        if not csv_path:
+            out_dir = Path(results_dir)
+            candidates = sorted(out_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                return Response(
+                    {"detail": f"No CSV produced in '{out_dir.resolve()}'."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            csv_path = str(candidates[0])
+
+        # 3) read CSV
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            return Response(
+                {"detail": f"Failed to read CSV '{csv_path}': {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if "date" in df.columns:
+            try:
+                df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
+            except Exception:
+                pass
+
+        rows = df.to_dict(orient="records")
+        return Response(
+            {
+                "csv": csv_path,
+                "count": len(rows),
+                "results": rows,
+                "meta": {"returned_from_csv": True, **meta},
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
+# ===========================
+#   DEBUG: simple ping view
+# ===========================
+
+class PingView(APIView):
+    permission_classes = [permissions.AllowAny]
+    def get(self, request):
+        return Response({"ok": True, "where": "NasaApp.views.PingView"})
