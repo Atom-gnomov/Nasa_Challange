@@ -1,5 +1,4 @@
 date,air_temp_C,pressure_kPa,wind_speed_m_s,moon_phase,summer_factor,estimated_water_temp_C
-2024-10-05,18.14,99.03,2.81,Waning,0.0,16.1
 2024-10-06,16.66,98.61,3.89,Waning,0.0,14.8
 2024-10-07,11.51,98.78,5.55,Waning,0.0,10.52
 2024-10-08,12.62,99.25,4.33,Waning,0.0,11.53
@@ -361,3 +360,4 @@ date,air_temp_C,pressure_kPa,wind_speed_m_s,moon_phase,summer_factor,estimated_w
 2025-09-29,10.37,99.97,5.13,New Moon,1.0,13.66
 2025-09-30,8.32,100.28,6.91,First Quarter,1.0,11.84
 2025-10-01,5.74,100.33,5.93,First Quarter,0.0,5.88
+2025-10-02,4.62,100.16,2.96,First Quarter,0.0,5.28
