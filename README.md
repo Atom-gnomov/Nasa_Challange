@@ -243,7 +243,3 @@ Outputs are persisted under:
 5. Open a PR
 
 ---
-
-## License
-
-MIT
